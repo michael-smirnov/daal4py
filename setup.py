@@ -31,6 +31,7 @@ import glob
 import numpy as np
 import scripts.build_backend as build_backend
 from scripts.version import get_onedal_version
+from pybind11.setup_helpers import Pybind11Extension
 
 try:
     from ctypes.utils import find_library
@@ -157,11 +158,15 @@ def get_libs(iface='daal'):
         major_version = get_win_major_version()
         libraries_plat = [f'onedal_core_dll{major_version}']
         onedal_lib = [f'onedal_dll{major_version}']
+        onedal_dpc_lib = [f'onedal_dpc_dll{major_version}']
     else:
         libraries_plat = ['onedal_core', 'onedal_thread']
         onedal_lib = ['onedal']
+        onedal_dpc_lib = ['onedal_dpc']
     if iface == 'onedal':
         libraries_plat += onedal_lib
+    elif iface == 'onedal_dpc':
+        libraries_plat += onedal_dpc_lib
     return libraries_plat
 
 
@@ -205,40 +210,16 @@ def get_build_options():
     return eca, ela, include_dir_plat
 
 
-def get_sources_onedal():
-    from distutils.dir_util import create_tree
-    from distutils.file_util import copy_file
-
-    cpp_files = glob.glob("onedal/**/**/*.cpp")
-    pyx_files = glob.glob("onedal/**/*.pyx")
-    pxi_files = glob.glob("onedal/**/*.pxi")
-
-    create_tree('build', pyx_files)
-    for f in pyx_files:
-        copy_file(f, jp('build', f))
-
-    main_pyx = 'onedal/onedal.pyx'
-    main_host_pyx = 'build/onedal/onedal_host.pyx'
-    main_dpc_pyx = 'build/onedal/onedal_dpc.pyx'
-    copy_file(main_pyx, main_host_pyx)
-    copy_file(main_pyx, main_dpc_pyx)
-
-    for f in pxi_files:
-        copy_file(f, jp('build', f))
-
-    return cpp_files, main_host_pyx, main_dpc_pyx
-
-
 def getpyexts():
     eca, ela, include_dir_plat = get_build_options()
     onedal_libraries_plat = get_libs("onedal")
+    onedal_dpc_libraries_plat = get_libs("onedal_dpc")
     libraries_plat = get_libs("daal")
-    cpp_files, main_host_pyx, main_dpc_pyx = get_sources_onedal()
 
     exts = []
 
-    ext = Extension('_onedal4py_host',
-                    sources=[main_host_pyx] + cpp_files,
+    ext = Pybind11Extension('_onedal_py_host',
+                    sources=sorted(glob.glob("onedal/**/*.cpp", recursive=True)),
                     include_dirs=include_dir_plat + [np.get_include()],
                     extra_compile_args=eca,
                     extra_link_args=ela,
@@ -249,10 +230,11 @@ def getpyexts():
                     ],
                     libraries=onedal_libraries_plat,
                     library_dirs=ONEDAL_LIBDIRS,
-                    language='c++')
+                    language='c++',
+                    cxx_std = 17)
 
     if ONEDAL_VERSION >= ONEDAL_2021_3:
-        exts.extend(cythonize(ext, compile_time_env={'ONEDAL_VERSION': ONEDAL_VERSION}))
+        exts.extend([ext])
 
     ext = Extension('_daal4py',
                     [os.path.abspath('src/daal4py.cpp'),
@@ -276,22 +258,24 @@ def getpyexts():
             runtime_library_dirs = []
             runtime_oneapi_dirs = []
 
-        ext = Extension('_onedal4py_dpc',
-                        sources=[main_dpc_pyx],
+        ext = Pybind11Extension('_onedal_py_dpc',
+                        sources=sorted(glob.glob("onedal/**/*.cpp", recursive=True)),
                         include_dirs=include_dir_plat + [np.get_include()],
                         extra_compile_args=eca,
                         extra_link_args=ela,
                         define_macros=[
+                            ('ONEDAL_DATA_PARALLEL', 1),
                             ('NPY_NO_DEPRECATED_API',
                              'NPY_1_7_API_VERSION'),
                         ],
-                        libraries=['dpc_backend'],
-                        library_dirs=['onedal'],
-                        runtime_library_dirs=runtime_library_dirs,
-                        language='c++')
+                        libraries=onedal_dpc_libraries_plat,
+                        library_dirs=ONEDAL_LIBDIRS,
+                        # runtime_library_dirs=runtime_library_dirs,
+                        language='c++',
+                        cxx_std = 17)
 
         if ONEDAL_VERSION >= ONEDAL_2021_3:
-            exts.extend(cythonize(ext))
+            exts.extend([ext])
         ext = Extension('_oneapi',
                         [os.path.abspath('src/oneapi/oneapi.pyx'), ],
                         depends=['src/oneapi/oneapi.h', 'src/oneapi/oneapi_backend.h'],
@@ -419,8 +403,6 @@ class install(orig_install.install):
     def run(self):
         if dpcpp:
             build_oneapi_backend()
-            if ONEDAL_VERSION >= ONEDAL_2021_3:
-                build_backend.custom_build_cmake_clib()
         return super().run()
 
 
@@ -428,8 +410,6 @@ class develop(orig_develop.develop):
     def run(self):
         if dpcpp:
             build_oneapi_backend()
-            if ONEDAL_VERSION >= ONEDAL_2021_3:
-                build_backend.custom_build_cmake_clib()
         return super().run()
 
 
@@ -437,8 +417,6 @@ class build(orig_build.build):
     def run(self):
         if dpcpp:
             build_oneapi_backend()
-            if ONEDAL_VERSION >= ONEDAL_2021_3:
-                build_backend.custom_build_cmake_clib()
         return super().run()
 
 
@@ -517,15 +495,9 @@ setup(
         'daal4py.sklearn.model_selection',
         'onedal',
         'onedal.svm',
-        'onedal.prims',
-        'onedal.common',
+        'onedal.primitives',
     ],
     package_data={
-        'onedal': [
-            'libdpc_backend.so',
-            'dpc_backend.lib',
-            'dpc_backend.dll'
-        ],
         'daal4py.oneapi': [
             'liboneapi_backend.so',
             'oneapi_backend.lib',

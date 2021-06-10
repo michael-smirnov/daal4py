@@ -1,4 +1,3 @@
-
 #===============================================================================
 # Copyright 2021 Intel Corporation
 #
@@ -15,6 +14,4 @@
 # limitations under the License.
 #===============================================================================
 
-from .svm import SVC, SVR, NuSVC, NuSVR, SVMtype
-
-__all__ = ['SVC', 'SVR', 'NuSVC', 'NuSVR', 'SVMtype']
+from .kernel_functions import linear_kernel, rbf_kernel, poly_kernel
