@@ -28,7 +28,8 @@ pybind11::bytes serialize(const T& original) {
     detail::binary_output_archive archive;
     detail::serialize(original, archive);
     const auto data = archive.to_array();
-    return { reinterpret_cast<const char*>(data.get_data()), archive.get_size() };
+    return { reinterpret_cast<const char*>(data.get_data()),
+             dal::detail::integral_cast<std::size_t>(archive.get_size()) };
 }
 
 template <typename T>
@@ -37,7 +38,7 @@ T deserialize(const pybind11::bytes& bytes) {
     const std::string str = bytes;
 
     detail::binary_input_archive archive{ reinterpret_cast<const byte_t*>(str.c_str()),
-                                          str.size() };
+                                          dal::detail::integral_cast<std::int64_t>(str.size()) };
     detail::deserialize(deserialized, archive);
     return deserialized;
 }

@@ -31,7 +31,7 @@ import glob
 import numpy as np
 import scripts.build_backend as build_backend
 from scripts.version import get_onedal_version
-from pybind11.setup_helpers import Pybind11Extension
+import pybind11
 
 try:
     from ctypes.utils import find_library
@@ -172,7 +172,7 @@ def get_libs(iface='daal'):
 
 def get_build_options():
     include_dir_plat = [os.path.abspath(
-        './src'), os.path.abspath('./onedal'), dal_root + '/include', ]
+        './src'), os.path.abspath('.'), dal_root + '/include', ]
     # FIXME it is a wrong place for this dependency
     if not no_dist:
         include_dir_plat.append(mpi_root + '/include')
@@ -212,29 +212,9 @@ def get_build_options():
 
 def getpyexts():
     eca, ela, include_dir_plat = get_build_options()
-    onedal_libraries_plat = get_libs("onedal")
-    onedal_dpc_libraries_plat = get_libs("onedal_dpc")
     libraries_plat = get_libs("daal")
 
     exts = []
-
-    ext = Pybind11Extension('_onedal_py_host',
-                    sources=sorted(glob.glob("onedal/**/*.cpp", recursive=True)),
-                    include_dirs=include_dir_plat + [np.get_include()],
-                    extra_compile_args=eca,
-                    extra_link_args=ela,
-                    define_macros=[
-                        ('NPY_NO_DEPRECATED_API',
-                         'NPY_1_7_API_VERSION'),
-                        ('ONEDAL_VERSION', ONEDAL_VERSION),
-                    ],
-                    libraries=onedal_libraries_plat,
-                    library_dirs=ONEDAL_LIBDIRS,
-                    language='c++',
-                    cxx_std = 17)
-
-    if ONEDAL_VERSION >= ONEDAL_2021_3:
-        exts.extend([ext])
 
     ext = Extension('_daal4py',
                     [os.path.abspath('src/daal4py.cpp'),
@@ -258,24 +238,6 @@ def getpyexts():
             runtime_library_dirs = []
             runtime_oneapi_dirs = []
 
-        ext = Pybind11Extension('_onedal_py_dpc',
-                        sources=sorted(glob.glob("onedal/**/*.cpp", recursive=True)),
-                        include_dirs=include_dir_plat + [np.get_include()],
-                        extra_compile_args=eca,
-                        extra_link_args=ela,
-                        define_macros=[
-                            ('ONEDAL_DATA_PARALLEL', 1),
-                            ('NPY_NO_DEPRECATED_API',
-                             'NPY_1_7_API_VERSION'),
-                        ],
-                        libraries=onedal_dpc_libraries_plat,
-                        library_dirs=ONEDAL_LIBDIRS,
-                        # runtime_library_dirs=runtime_library_dirs,
-                        language='c++',
-                        cxx_std = 17)
-
-        if ONEDAL_VERSION >= ONEDAL_2021_3:
-            exts.extend([ext])
         ext = Extension('_oneapi',
                         [os.path.abspath('src/oneapi/oneapi.pyx'), ],
                         depends=['src/oneapi/oneapi.h', 'src/oneapi/oneapi_backend.h'],
@@ -341,55 +303,116 @@ def gen_pyx(odir):
 gen_pyx(os.path.abspath('./build'))
 
 
-def build_oneapi_backend():
+def build_cpp(cc, cxx, sources, targetname, targetsuffix, libs, includes, eca, ela, defines, installpath=''):
     import shutil
     import subprocess
+    from sysconfig import get_paths as gp
+    from os.path import basename
 
-    eca, ela, include_dir_plat = get_build_options()
-    libraries_plat = get_libs('daal')
-    libraries = libraries_plat + ['OpenCL', 'onedal_sycl']
-    include_dir_plat = ['-I' + incdir for incdir in include_dir_plat]
+    print(f'building cpp target {targetname}...')
+
+    include_dir_plat = ['-I' + incdir for incdir in includes]
     library_dir_plat = ['-L' + libdir for libdir in ONEDAL_LIBDIRS]
     if IS_WIN:
         eca += ['/EHsc']
         ela += ['/MD']
         lib_prefix = ''
         lib_suffix = '.lib'
-        libname = 'oneapi_backend.dll'
-        additional_linker_opts = ['/link', '/DLL', f'/OUT:{libname}']
+        additional_linker_opts = ['/link', '/DLL', f'/OUT:{targetname}{targetsuffix}']
     else:
         eca += ['-fPIC']
         ela += ['-shared']
-        lib_suffix = ''
         lib_prefix = '-l'
-        libname = 'liboneapi_backend.so'
-        additional_linker_opts = ['-o', libname]
-    libraries = [f'{lib_prefix}{str(item)}{lib_suffix}' for item in libraries]
+        lib_suffix = ''
+        additional_linker_opts = ['-o', f'{targetname}{targetsuffix}']
+    eca += ['-c']
+    libs = [f'{lib_prefix}{str(item)}{lib_suffix}' for item in libs]
 
     d4p_dir = os.getcwd()
-    src_dir = os.path.join(d4p_dir, "src/oneapi")
-    build_dir = os.path.join(d4p_dir, "build_backend")
+    build_dir = os.path.join(d4p_dir, f"build_{targetname}")
 
     if os.path.exists(build_dir):
         shutil.rmtree(build_dir)
     os.mkdir(build_dir)
     os.chdir(build_dir)
 
-    cmd = ['dpcpp'] + \
-        include_dir_plat + eca + \
-        library_dir_plat + ela + \
-        [f'{src_dir}/oneapi_backend.cpp'] + \
-        libraries + additional_linker_opts
+    objfiles = [basename(f).replace('.cpp', '.o') for f in sources]
+    for i, cppfile in enumerate(sources):
+        cmd = [cc] + include_dir_plat + eca + [f'{d4p_dir}/{cppfile}'] + \
+              ['-o', objfiles[i]] + defines
+        print(subprocess.list2cmdline(cmd))
+        subprocess.check_call(cmd)
 
+    cmd = [cxx] + objfiles + library_dir_plat + \
+          ela + libs + additional_linker_opts
     print(subprocess.list2cmdline(cmd))
     subprocess.check_call(cmd)
 
-    shutil.copy(libname, os.path.join(d4p_dir, "daal4py/oneapi"))
+    shutil.copy(f'{targetname}{targetsuffix}', os.path.join(d4p_dir, installpath))
     if IS_WIN:
-        shutil.copy(libname.replace('.dll', '.lib'),
-                    os.path.join(d4p_dir, "daal4py/oneapi"))
+        target_lib_suffix = targetsuffix.replace('.dll', '.lib')
+        shutil.copy(f'{targetname}{target_lib_suffix}', os.path.join(d4p_dir, installpath))
     os.chdir(d4p_dir)
 
+
+def build_oneapi_backend():
+    eca, ela, includes = get_build_options()
+
+    return build_cpp(
+        cc='dpcpp',
+        cxx='dpcpp',
+        sources=['src/oneapi/oneapi_backend.cpp'],
+        targetname='oneapi_backend',
+        targetsuffix='',
+        libs=get_libs('daal') + ['OpenCL', 'onedal_sycl'],
+        includes=includes,
+        eca=eca,
+        ela=ela,
+        defines=[],
+        installpath='daal4py/oneapi/'
+        )
+
+
+def build_onedal(iface):
+    from sysconfig import get_paths as gp
+    eca, ela, includes = get_build_options()
+    defines = ['-DNPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION',
+               f'-DONEDAL_VERSION={ONEDAL_VERSION}']
+    if iface is 'host':
+        if IS_LIN:
+            cc, cxx = 'gcc', 'g++'
+        if IS_MAC:
+            cc, cxx = 'clang', 'clang++'
+        if IS_WIN:
+            cc, cxx = 'cl', 'cl'
+        libs = get_libs('onedal')
+    elif iface is 'dpc':
+        cc, cxx = 'dpcpp', 'dpcpp'
+        defines += ['-DONEDAL_DATA_PARALLEL']
+        libs = get_libs('onedal_dpc')
+
+    build_cpp(
+        cc=cc,
+        cxx=cxx,
+        sources=sorted(glob.glob('onedal/**/*.cpp', recursive=True)),
+        targetname=f'_onedal_py_{iface}',
+        targetsuffix=get_config_vars('EXT_SUFFIX')[0],
+        libs=libs,
+        includes=includes + [np.get_include()] + [pybind11.get_include()] + [gp()['include']],
+        eca=eca + ['-std=c++17', '-O3', '-fvisibility=hidden', '-g0'],
+        ela=ela,
+        defines=defines,
+        installpath='onedal'
+        )
+
+
+def get_onedal_py_libs():
+    ext_suffix = get_config_vars('EXT_SUFFIX')[0]
+    libs = [f'_onedal_py_host{ext_suffix}', f'_onedal_py_dpc{ext_suffix}']
+    if IS_WIN:
+        ext_suffix_lib = ext_suffix.replace('.dll', '.lib')
+        libs += [f'_onedal_py_host{ext_suffix_lib}', f'_onedal_py_dpc{ext_suffix_lib}']
+    return libs
 
 def distutils_dir_name(dname):
     """Returns the name of a distutils build directory"""
@@ -399,23 +422,20 @@ def distutils_dir_name(dname):
                     version=sys.version_info)
 
 
-class install(orig_install.install):
-    def run(self):
-        if dpcpp:
-            build_oneapi_backend()
-        return super().run()
-
-
 class develop(orig_develop.develop):
     def run(self):
+        build_onedal('host')
         if dpcpp:
+            build_onedal('dpc')
             build_oneapi_backend()
         return super().run()
 
 
 class build(orig_build.build):
     def run(self):
+        build_onedal('host')
         if dpcpp:
+            build_onedal('dpc')
             build_oneapi_backend()
         return super().run()
 
@@ -450,7 +470,7 @@ setup(
     author_email="scripting@intel.com",
     maintainer_email="onedal.maintainers@intel.com",
     project_urls=project_urls,
-    cmdclass={'install': install, 'develop': develop, 'build': build},
+    cmdclass={'develop': develop, 'build': build},
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Environment :: Console',
@@ -496,13 +516,15 @@ setup(
         'onedal',
         'onedal.svm',
         'onedal.primitives',
+        'onedal.datatypes'
     ],
     package_data={
         'daal4py.oneapi': [
             'liboneapi_backend.so',
             'oneapi_backend.lib',
-            'oneapi_backend.dll'
+            'oneapi_backend.dll',
         ],
+        'onedal': get_onedal_py_libs()
     },
     ext_modules=getpyexts()
 )

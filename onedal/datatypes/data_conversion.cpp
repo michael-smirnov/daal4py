@@ -105,14 +105,12 @@ namespace oneapi::dal::python {
 #define array_data(a)      PyArray_DATA((PyArrayObject *)a)
 #define array_size(a, i)   PyArray_DIM((PyArrayObject *)a, i)
 
-#ifdef ONEDAL_DATA_PARALLEL
 int init_numpy() {
     import_array();
     return 0;
 }
 
 const static int numpy_initialized = init_numpy();
-#endif
 
 template <typename T>
 static dal::array<T> transfer_to_host(const dal::array<T>& array) {

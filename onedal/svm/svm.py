@@ -32,9 +32,9 @@ from ..datatypes import (
 )
 
 try:
-    import _onedal_py_dpc as backend
+    import onedal._onedal_py_dpc as backend
 except ImportError:
-    import _onedal_py_host as backend
+    import onedal._onedal_py_host as backend
 
 class SVMtype(Enum):
     c_svc = 0
